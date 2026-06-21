@@ -36,7 +36,8 @@ export async function POST(request) {
       mailOptions.attachments = [
         {
           filename: attachmentOriginalName || 'resume.pdf',
-          content: Buffer.from(attachmentBase64, 'base64')
+          content: Buffer.from(attachmentBase64, 'base64'),
+          contentType: 'application/pdf'
         }
       ];
     }

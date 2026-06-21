@@ -539,10 +539,15 @@ Output only the JSON array:`;
   const startCampaign = async () => {
     if (!smtp) { alert('Set up SMTP in Settings first.'); return; }
     if (!activeTemplate) { alert('Generate templates in Step 4 first.'); return; }
+    if (resume && !resume.base64) {
+      alert('Please re-upload your resume in Step 1. The app now parses and attaches resumes entirely in-memory using client local storage (no disk uploads).');
+      return;
+    }
     const targets = recipientsRef.current.filter(r => r.selected && r.status !== 'sent');
     if (targets.length === 0) return;
 
     setIsCampaignRunning(true);
+    isCampaignRunningRef.current = true;
     setCampaignProgress({ completed: 0, total: targets.length });
     addLog(`Launching campaign: ${targets.length} emails`, 'info');
 
@@ -588,10 +593,15 @@ Output only the JSON array:`;
       if (next && isCampaignRunningRef.current) await new Promise(res => setTimeout(res, sendDelay * 1000));
     }
     setIsCampaignRunning(false);
+    isCampaignRunningRef.current = false;
     addLog('Campaign complete.', 'success');
   };
 
-  const pauseCampaign = () => { setIsCampaignRunning(false); addLog('Paused.', 'warning'); };
+  const pauseCampaign = () => {
+    setIsCampaignRunning(false);
+    isCampaignRunningRef.current = false;
+    addLog('Paused.', 'warning');
+  };
 
   // Settings
   const handleSmtpSubmit = (e) => {
@@ -1156,6 +1166,12 @@ Output only the JSON array:`;
                   {!smtp ? (
                     <div className="inline-warning">
                       <i className="fa-solid fa-triangle-exclamation"></i> Set up SMTP in <button className="link-btn" onClick={() => setShowSettings(true)}>Settings</button> first.
+                    </div>
+                  ) : null}
+
+                  {resume && !resume.base64 ? (
+                    <div className="inline-warning" style={{ marginTop: '8px' }}>
+                      <i className="fa-solid fa-triangle-exclamation"></i> Please re-upload your resume in Step 1 to attach it to emails (in-memory mode).
                     </div>
                   ) : null}
                 </div>
