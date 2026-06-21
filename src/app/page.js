@@ -235,13 +235,39 @@ export default function Home() {
     setIsSearchingLeads(true);
     addLog(`Searching for ${searchTargetCompany}...`, 'info');
 
-    const prompt = `Perform a web search to find email addresses and public contacts (CEO, CTO, Engineering Managers, Recruiters, Founders) at "${searchTargetCompany}".
-Return ONLY a clean JSON array. No markdown, no explanation. Each object:
-[{"email":"name@co.com","name":"Full Name","company":"${searchTargetCompany}","role":"Title","context":"Brief note"}]
-Find as many real contacts as possible. If emails aren't public, construct likely patterns (first.last@domain.com). Output only JSON:`;
+    const prompt = `You are a world-class lead generation agent in "God Mode". Your goal is to find high-quality, real public contacts and email addresses for key team members (Founders, CEO, CTO, Engineering Managers, Tech Leads, and Recruiters) at "${searchTargetCompany}".
+
+To do this, perform multiple web searches to:
+1. Identify the domain name of "${searchTargetCompany}" (e.g. vercel.com).
+2. Look up the typical email format pattern for "${searchTargetCompany}" (e.g., {first}.{last}@{domain}, {first}@{domain}).
+3. Search for actual public email addresses, GitHub profiles, LinkedIn URLs, or contact information of specific decision-makers at the company.
+4. If specific email addresses are not publicly listed, use the company's verified email pattern to construct their likely email addresses.
+
+Ensure you find up to 10 distinct, highly relevant contacts. For each contact, provide:
+- "name": Full name of the contact.
+- "email": Verified email or reconstructed email based on the company's format.
+- "company": "${searchTargetCompany}"
+- "role": Specific job title (e.g., CTO, Lead Engineer, Tech Recruiter).
+- "context": A highly personalized sentence about why we are reaching out to them (e.g., "Responsible for leading frontend infrastructure", "Founding member of the core engineering team").
+
+Output ONLY a raw JSON array. Do not include markdown code blocks, do not include any explanatory text before or after the JSON. Format:
+[
+  {
+    "email": "contact@company.com",
+    "name": "Contact Name",
+    "company": "Company Name",
+    "role": "Title",
+    "context": "Context sentence"
+  }
+]`;
 
     try {
-      const response = await window.puter.ai.chat(prompt, { model: aiModel, tools: [{ type: "web_search" }] });
+      const options = { model: aiModel };
+      if (!aiModel.startsWith('perplexity/')) {
+        options.tools = [{ type: "web_search" }];
+      }
+
+      const response = await window.puter.ai.chat(prompt, options);
       const responseText = typeof response === 'string' ? response : (response?.message?.content || '');
       let clean = responseText.trim();
       if (clean.startsWith("```json")) clean = clean.substring(7);
@@ -270,7 +296,11 @@ Find as many real contacts as possible. If emails aren't public, construct likel
         addLog('No contacts found. Try a different query.', 'warning');
       }
     } catch (err) {
-      addLog(`Search failed: ${err.message}`, 'error');
+      if (err.message && err.message.includes('must contain either output text or tool calls')) {
+        addLog("Search tool failed. Go to Settings and choose a 'Perplexity' model for built-in search.", "warning");
+      } else {
+        addLog(`Search failed: ${err.message}`, 'error');
+      }
     } finally {
       setIsSearchingLeads(false);
     }
@@ -739,8 +769,10 @@ Output only the JSON array:`;
               <div className="settings-section">
                 <h4><i className="fa-solid fa-brain"></i> AI Model</h4>
                 <select value={aiModel} onChange={e => setAiModel(e.target.value)}>
-                  <option value="gpt-4o">GPT-4o</option>
-                  <option value="gpt-4o-mini">GPT-4o Mini (faster)</option>
+                  <option value="gpt-4o">GPT-4o (Supports web search tool)</option>
+                  <option value="gpt-4o-mini">GPT-4o Mini (Supports web search tool)</option>
+                  <option value="perplexity/sonar">Perplexity Sonar (Built-in Search)</option>
+                  <option value="perplexity/sonar-pro-search">Perplexity Sonar Pro (Built-in Search)</option>
                   <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
                   <option value="claude-3-opus">Claude 3 Opus</option>
                 </select>
