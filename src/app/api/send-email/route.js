@@ -1,12 +1,10 @@
 import { NextResponse } from 'next/server';
 import nodemailer from 'nodemailer';
-import path from 'path';
-import fs from 'fs';
 
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { smtpUser, smtpPass, to, subject, body: emailBody, attachmentFilename, attachmentOriginalName } = body;
+    const { smtpUser, smtpPass, to, subject, body: emailBody, attachmentBase64, attachmentOriginalName } = body;
 
     if (!smtpUser || !smtpPass) {
       return NextResponse.json({ error: 'SMTP credentials (user and pass) are required' }, { status: 400 });
@@ -33,21 +31,14 @@ export async function POST(request) {
       html: emailBody.replace(/\n/g, '<br>')
     };
 
-    // Handle resume attachments
-    if (attachmentFilename) {
-      const uploadsDir = path.join(process.cwd(), 'uploads');
-      const filePath = path.join(uploadsDir, attachmentFilename);
-      
-      if (fs.existsSync(filePath)) {
-        mailOptions.attachments = [
-          {
-            filename: attachmentOriginalName || attachmentFilename,
-            path: filePath
-          }
-        ];
-      } else {
-        console.warn(`Attachment file not found: ${filePath}`);
-      }
+    // Handle resume attachments (Base64)
+    if (attachmentBase64) {
+      mailOptions.attachments = [
+        {
+          filename: attachmentOriginalName || 'resume.pdf',
+          content: Buffer.from(attachmentBase64, 'base64')
+        }
+      ];
     }
 
     const info = await transporter.sendMail(mailOptions);

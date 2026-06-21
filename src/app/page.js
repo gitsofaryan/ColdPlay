@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { prebuiltTemplates } from './templatesData';
 
 const STEPS = [
   { id: 1, label: 'Resume', icon: 'fa-file-pdf' },
@@ -117,7 +118,13 @@ export default function Home() {
       setSmtpForm({ user: p.user || '', pass: p.pass || '' });
     }
     const savedResume = localStorage.getItem('coldpilot_resume');
-    if (savedResume) setResume(JSON.parse(savedResume));
+    if (savedResume) {
+      try {
+        const parsed = JSON.parse(savedResume);
+        const savedBase64 = localStorage.getItem('coldpilot_resume_base64');
+        setResume({ ...parsed, base64: savedBase64 });
+      } catch (e) { /* skip */ }
+    }
     const savedResumeText = localStorage.getItem('coldpilot_resume_text');
     if (savedResumeText) setResumeText(savedResumeText);
     const savedRecipients = localStorage.getItem('coldpilot_recipients');
@@ -166,37 +173,35 @@ export default function Home() {
   const uploadResumeFile = async (file) => {
     const formData = new FormData();
     formData.append('resume', file);
-    try {
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (res.ok) {
-        const meta = { filename: data.filename, originalName: data.originalName, size: file.size };
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const base64 = e.target.result.split(',')[1];
+        const meta = { originalName: file.name, size: file.size, base64: base64 };
         setResume(meta);
-        localStorage.setItem('coldpilot_resume', JSON.stringify(meta));
-        addLog(`Resume uploaded: ${file.name}`, 'success');
-        // Parse PDF text
+        localStorage.setItem('coldpilot_resume', JSON.stringify({ originalName: file.name, size: file.size }));
+        localStorage.setItem('coldpilot_resume_base64', base64);
+        addLog(`Resume processed client-side: ${file.name}`, 'success');
+
+        // Parse PDF text by sending file directly to parse-resume API
         setIsParsingResume(true);
-        try {
-          const parseRes = await fetch('/api/parse-resume', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: data.filename })
-          });
-          const parseData = await parseRes.json();
-          if (parseData.success && parseData.text) {
-            setResumeText(parseData.text);
-            localStorage.setItem('coldpilot_resume_text', parseData.text);
-            addLog(`Resume parsed — ${parseData.pages} page(s).`, 'success');
-          }
-        } catch (e) {
-          addLog(`Resume parse warning: ${e.message}`, 'warning');
-        } finally {
-          setIsParsingResume(false);
+        const parseRes = await fetch('/api/parse-resume', { method: 'POST', body: formData });
+        const parseData = await parseRes.json();
+        if (parseData.success && parseData.text) {
+          setResumeText(parseData.text);
+          localStorage.setItem('coldpilot_resume_text', parseData.text);
+          addLog(`Resume parsed — ${parseData.pages} page(s).`, 'success');
+        } else {
+          throw new Error(parseData.error || 'Failed to parse resume');
         }
+      } catch (err) {
+        addLog(`Resume processing failed: ${err.message}`, 'error');
+      } finally {
+        setIsParsingResume(false);
       }
-    } catch (e) {
-      addLog(`Upload failed: ${e.message}`, 'error');
-    }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleDeleteResume = () => {
@@ -204,6 +209,7 @@ export default function Home() {
     setResumeText('');
     localStorage.removeItem('coldpilot_resume');
     localStorage.removeItem('coldpilot_resume_text');
+    localStorage.removeItem('coldpilot_resume_base64');
     addLog('Resume removed.', 'info');
   };
 
@@ -340,6 +346,60 @@ Find as many real contacts as possible. If emails aren't public, construct likel
   };
 
   // ── Step 4: AI Template Generation ──
+  // Helper functions for candidate info extraction from resume & preferences
+  const guessCandidateName = () => {
+    if (resume && resume.originalName) {
+      const cleanName = resume.originalName.replace(/[-_]cv|[-_]resume/gi, '').split(/[-_\s.]+/)[0];
+      if (cleanName && isNaN(cleanName)) {
+        return cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
+      }
+    }
+    if (resumeText) {
+      const lines = resumeText.split('\n').map(l => l.trim()).filter(l => l);
+      if (lines.length > 0) {
+        const firstLine = lines[0].split(/\s+/)[0];
+        if (firstLine && firstLine.length > 2 && /^[A-Za-z]+$/.test(firstLine)) {
+          return firstLine.charAt(0).toUpperCase() + firstLine.slice(1);
+        }
+      }
+    }
+    return 'Aryan'; // default fallback
+  };
+
+  const guessCandidateTitle = () => {
+    if (selectedRoles && selectedRoles.length > 0) {
+      const role = selectedRoles[0].toLowerCase();
+      if (role.includes('full-stack')) return 'full-stack engineer';
+      if (role.includes('backend')) return 'backend engineer';
+      if (role.includes('frontend')) return 'frontend engineer';
+      return `${role.replace(' engineering', '').replace(' development', '')} engineer`;
+    }
+    return 'software engineer';
+  };
+
+  const guessProfileLinks = () => {
+    const urls = [];
+    if (resumeText) {
+      const githubMatch = resumeText.match(/(github\.com\/[a-zA-Z0-9_-]+)/i);
+      const linkedinMatch = resumeText.match(/(linkedin\.com\/in\/[a-zA-Z0-9_-]+)/i);
+      if (githubMatch) urls.push(githubMatch[1].toLowerCase());
+      if (linkedinMatch) urls.push(linkedinMatch[1].toLowerCase());
+    }
+    if (urls.length === 0) {
+      urls.push('github.com/aryan-jain');
+      urls.push('linkedin.com/in/aryan-jain');
+    }
+    return urls.join('\n');
+  };
+
+  // ── Step 4: AI Template Generation & Prebuilt Templates ──
+  const handleLoadPrebuiltTemplates = () => {
+    setAiTemplates(prebuiltTemplates);
+    setSelectedTemplateIdx(0);
+    localStorage.setItem('coldpilot_ai_templates', JSON.stringify(prebuiltTemplates));
+    addLog('Loaded 5 pre-built templates.', 'success');
+  };
+
   const handleGenerateTemplates = async () => {
     if (!resumeText) { alert('Upload your resume in Step 1 first.'); return; }
 
@@ -358,32 +418,32 @@ The candidate wants a ${posLabel} position in: ${rolesStr}.
 They're targeting companies like: ${companiesStr}.
 ${customRoleNote ? `Additional notes: ${customRoleNote}` : ''}
 
-Generate 3 simple cold outreach email templates for this candidate based on the resume.
+Generate exactly 5 simple, highly personalized cold outreach email templates for this candidate based on the resume, following 5 distinct angles:
+1. "The Direct Ask" (emoji: 👋): Direct, humble referral request for a role.
+2. "The Quick Question" (emoji: ❓): Ask about engineering culture or a technical design question to start a connection.
+3. "The Applied Already" (emoji: 📋): Low friction follow-up after applying to a role.
+4. "The Learner" (emoji: 🌱): Ask for advice and build a relationship first.
+5. "The Builder" (emoji: 🔧): Lead with a specific tool or project they built, keeping it brief and linking to proof of competence.
 
 IMPORTANT RULES:
-- DO NOT hardcode specific complex projects or data unless explicitly telling a very brief story. Do not make things up.
-- Keep the emails INCREDIBLY simple and humble.
-- Use this EXACT structure and tone as a baseline:
-  "Hey {{Name}},
-  I'm [Candidate Name], a full-stack engineer and a recent graduate. I wanted to learn and work with great engineers and the ecosystem.
-  Here are my links and work:
-  [Insert Profile Links from Resume]
-  Please if your company is hiring please refer me or give me an intern/role."
-- The tone should be exactly like the text above: direct, humble, and asking for a referral or internship/role.
-- Do NOT use formal corporate jargon or "sales" language.
-- Each template must include {{Name}} and {{Company}} placeholders.
-- Sign off as the candidate using their name from the resume.
+- The emails must be extremely short (4-6 sentences max) and read naturally/humbly (like a developer writing to a peer, not a salesperson).
+- DO NOT use formal corporate jargon or "sales" language.
+- Use placeholders:
+  - {{Name}} for recipient name.
+  - {{Company}} for recipient company.
+  - {{CandidateName}} for candidate's name.
+  - {{CandidateTitle}} for candidate's title (e.g. software engineer).
+  - {{ProfileLinks}} for candidate's GitHub/LinkedIn links.
+- DO NOT hardcode candidate name, links, or title. Use the exact placeholders {{CandidateName}}, {{CandidateTitle}}, and {{ProfileLinks}} so they can be replaced dynamically.
 - CRITICAL: DO NOT use any hyphens (-) in the email body or subject line. This is a strict constraint.
-- Explicitly mention in the email that your resume is attached.
-
-Also generate for each template:
-- A "subject" line. Make it specific and intriguing (e.g., "Systems engineer interested in [Company]'s work on [Topic]"). Avoid generic subjects. Do NOT use hyphens.
+- Explicitly mention in each email that the resume is attached.
+- Make the subject lines specific and intriguing (e.g. "systems engineer interested in {{Company}}" or "quick question about engineering at {{Company}}"). Do NOT use hyphens in subjects.
 
 Return ONLY a JSON array. No markdown, no explanation. Each object:
 [
   {
-    "name": "The Builder",
-    "emoji": "🔧",
+    "name": "Template Angle Name",
+    "emoji": "emoji here",
     "subject": "subject line here",
     "body": "email body here"
   }
@@ -421,12 +481,24 @@ Output only the JSON array:`;
 
   const renderTemplate = (text, r) => {
     if (!text) return '';
+    const candName = guessCandidateName();
+    const candTitle = guessCandidateTitle();
+    const candLinks = guessProfileLinks();
+    const recName = r?.name || 'Hiring Manager';
+    const recCompany = r?.company || 'your company';
+    const recRole = r?.role || 'Software Engineer';
+    const recContext = r?.context || '';
+    const aiText = r?.aiText || '';
+
     return text
-      .replace(/{{Name}}/g, r.name || 'Hiring Manager')
-      .replace(/{{Company}}/g, r.company || 'your company')
-      .replace(/{{Role}}/g, r.role || 'Software Engineer')
-      .replace(/{{Context}}/g, r.context || '')
-      .replace(/{{AI_Personalization}}/g, r.aiText || '');
+      .replace(/{{Name}}/g, recName)
+      .replace(/{{Company}}/g, recCompany)
+      .replace(/{{Role}}/g, recRole)
+      .replace(/{{Context}}/g, recContext)
+      .replace(/{{AI_Personalization}}/g, aiText)
+      .replace(/{{CandidateName}}/g, candName)
+      .replace(/{{CandidateTitle}}/g, candTitle)
+      .replace(/{{ProfileLinks}}/g, candLinks);
   };
 
   const handleRunAiPersonalization = async () => {
@@ -487,7 +559,10 @@ Output only the JSON array:`;
           subject: renderTemplate(activeTemplate.subject, r),
           body: renderTemplate(activeTemplate.body, r)
         };
-        if (resume) { payload.attachmentFilename = resume.filename; payload.attachmentOriginalName = resume.originalName; }
+        if (resume && resume.base64) {
+          payload.attachmentBase64 = resume.base64;
+          payload.attachmentOriginalName = resume.originalName;
+        }
 
         const res = await fetch('/api/send-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         const data = await res.json();
@@ -994,10 +1069,10 @@ Output only the JSON array:`;
                           <div className="email-preview">
                             <div className="email-preview-field">
                               <span className="field-label">Subject:</span>
-                              <span className="field-value">{previewRecipient ? renderTemplate(activeTemplate.subject, previewRecipient) : activeTemplate.subject}</span>
+                              <span className="field-value">{renderTemplate(activeTemplate.subject, previewRecipient)}</span>
                             </div>
                             <div className="email-preview-divider"></div>
-                            <div className="email-preview-body" dangerouslySetInnerHTML={{ __html: previewRecipient ? renderTemplate(activeTemplate.body, previewRecipient).replace(/\n/g, '<br>') : activeTemplate.body.replace(/\n/g, '<br>') }}></div>
+                            <div className="email-preview-body" dangerouslySetInnerHTML={{ __html: renderTemplate(activeTemplate.body, previewRecipient).replace(/\n/g, '<br>') }}></div>
                           </div>
                         )}
                       </div>
